@@ -23,6 +23,10 @@
  *   npx claude-cortex clawdbot install        # Install Clawdbot/Moltbot hook
  *   npx claude-cortex clawdbot uninstall      # Remove Clawdbot/Moltbot hook
  *   npx claude-cortex clawdbot status         # Check Clawdbot hook status
+ *   npx claude-cortex opencode setup          # Configure for OpenCode (MCP + plugins)
+ *   npx claude-cortex opencode mcp            # Configure MCP server only
+ *   npx claude-cortex opencode plugins        # Install OpenCode plugins only
+ *   npx claude-cortex opencode status         # Check OpenCode integration status
  */
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -35,6 +39,7 @@ import { handleServiceCommand } from './service/install.js';
 import { setupClaudeMd } from './setup/claude-md.js';
 import { handleHookCommand } from './setup/hooks.js';
 import { handleClawdbotCommand } from './setup/clawdbot.js';
+import { handleOpenCodeCommand } from './setup/opencode.js';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -212,6 +217,12 @@ async function main() {
       console.error('Unknown graph command. Available: backfill');
       process.exit(1);
     }
+    return;
+  }
+
+  // Handle "opencode" subcommand
+  if (process.argv[2] === 'opencode') {
+    await handleOpenCodeCommand(process.argv[3] || '');
     return;
   }
 
