@@ -18,7 +18,8 @@ const __dirname = path.dirname(__filename);
 // OpenCode config locations
 const OPENCODE_CONFIG_DIR = path.join(os.homedir(), '.config', 'opencode');
 const OPENCODE_GLOBAL_CONFIG = path.join(OPENCODE_CONFIG_DIR, 'opencode.json');
-const OPENCODE_PLUGINS_DIR = path.join(OPENCODE_CONFIG_DIR, 'plugins');
+// Note: OpenCode uses 'plugin/' (singular) not 'plugins/'
+const OPENCODE_PLUGINS_DIR = path.join(OPENCODE_CONFIG_DIR, 'plugin');
 
 // Plugin source location (relative to dist/)
 const PLUGIN_SOURCE_DIR = path.resolve(__dirname, '..', '..', 'opencode-plugins');
@@ -197,7 +198,7 @@ export async function setupOpenCode(): Promise<void> {
 
   MCP Server:  npx claude-cortex
   Config:      ~/.config/opencode/opencode.json
-  Plugins:     ~/.config/opencode/plugins/cortex-memory/
+  Plugin:      ~/.config/opencode/plugin/cortex-memory/
 
   Available memory tools:
     remember    - Store important information

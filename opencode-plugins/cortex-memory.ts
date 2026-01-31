@@ -7,6 +7,9 @@
  *
  * This plugin integrates the claude-cortex memory system with OpenCode,
  * giving any LLM model access to persistent, brain-like memory.
+ *
+ * Plugin Format: OpenCode plugins export an async function that receives
+ * context and returns an object mapping event names to handlers.
  */
 
 import Database from 'better-sqlite3';
@@ -16,24 +19,24 @@ import { homedir } from 'os';
 
 // ==================== TYPES ====================
 
-interface OpenCodeContext {
-  client?: {
-    callTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+interface PluginContext {
+  client: {
+    app: {
+      log: (message: string, options?: { level?: string; data?: unknown }) => Promise<void>;
+    };
   };
-  project?: {
+  project: {
     name: string;
     path: string;
   };
-  directory?: string;
-  $?: (
-    strings: TemplateStringsArray,
-    ...values: unknown[]
-  ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  directory: string;
+  worktree: string;
+  $: (strings: TemplateStringsArray, ...values: unknown[]) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 }
 
-interface SessionContext {
-  conversation?: string;
-  messages?: Array<{ role: string; content: string }>;
+interface SessionEvent {
+  sessionId: string;
+  [key: string]: unknown;
 }
 
 interface Memory {
@@ -54,8 +57,6 @@ interface ExtractedMemory {
   salience: number;
   tags: string[];
   extractorType?: string;
-  baseSalience?: number;
-  frequencyBoost?: number;
 }
 
 // ==================== DATABASE CONFIG ====================
@@ -82,24 +83,10 @@ function connectDatabase(dbPath: string, options?: { readonly?: boolean }): Data
 // ==================== PROJECT DETECTION ====================
 
 const SKIP_DIRECTORIES = [
-  'src',
-  'lib',
-  'dist',
-  'build',
-  'out',
-  'node_modules',
-  '.git',
-  '.next',
-  '.cache',
-  'test',
-  'tests',
-  '__tests__',
-  'spec',
-  'bin',
-  'scripts',
-  'config',
-  'public',
-  'static',
+  'src', 'lib', 'dist', 'build', 'out',
+  'node_modules', '.git', '.next', '.cache',
+  'test', 'tests', '__tests__', 'spec',
+  'bin', 'scripts', 'config', 'public', 'static',
 ];
 
 function extractProjectFromPath(path: string | undefined): string | null {
@@ -128,17 +115,15 @@ function getProjectContext(db: Database.Database, project: string): Memory[] {
   const memories: Memory[] = [];
 
   const highPriority = db
-    .prepare(
-      `
-    SELECT id, title, content, category, type, salience, tags, created_at
-    FROM memories
-    WHERE (project = ? OR project IS NULL)
-      AND salience >= ?
-      AND type IN ('long_term', 'episodic')
-    ORDER BY salience DESC, last_accessed DESC
-    LIMIT ?
-  `
-    )
+    .prepare(`
+      SELECT id, title, content, category, type, salience, tags, created_at
+      FROM memories
+      WHERE (project = ? OR project IS NULL)
+        AND salience >= ?
+        AND type IN ('long_term', 'episodic')
+      ORDER BY salience DESC, last_accessed DESC
+      LIMIT ?
+    `)
     .all(project, MIN_SALIENCE_THRESHOLD, MAX_CONTEXT_MEMORIES) as Memory[];
 
   memories.push(...highPriority);
@@ -147,16 +132,14 @@ function getProjectContext(db: Database.Database, project: string): Memory[] {
     const excludeIds = memories.map((m) => m.id);
     const placeholders = excludeIds.length > 0 ? excludeIds.map(() => '?').join(',') : '0';
     const recent = db
-      .prepare(
-        `
-      SELECT id, title, content, category, type, salience, tags, created_at
-      FROM memories
-      WHERE (project = ? OR project IS NULL)
-        AND id NOT IN (${placeholders})
-      ORDER BY created_at DESC
-      LIMIT ?
-    `
-      )
+      .prepare(`
+        SELECT id, title, content, category, type, salience, tags, created_at
+        FROM memories
+        WHERE (project = ? OR project IS NULL)
+          AND id NOT IN (${placeholders})
+        ORDER BY created_at DESC
+        LIMIT ?
+      `)
       .all(project, ...excludeIds, 5 - memories.length) as Memory[];
 
     memories.push(...recent);
@@ -201,18 +184,7 @@ function formatContext(memories: Memory[], project: string): string | null {
 
 // ==================== MEMORY EXTRACTION ====================
 
-const ARCHITECTURE_KEYWORDS = [
-  'architecture',
-  'design',
-  'pattern',
-  'structure',
-  'system',
-  'database',
-  'api',
-  'schema',
-  'model',
-  'framework',
-];
+const ARCHITECTURE_KEYWORDS = ['architecture', 'design', 'pattern', 'structure', 'system', 'database', 'api', 'schema', 'model', 'framework'];
 const ERROR_KEYWORDS = ['error', 'bug', 'fix', 'issue', 'problem', 'crash', 'fail', 'exception', 'debug', 'resolve'];
 const DECISION_KEYWORDS = ['decided', 'decision', 'chose', 'chosen', 'selected', 'going with', 'will use', 'opted for'];
 const LEARNING_KEYWORDS = ['learned', 'discovered', 'realized', 'found out', 'turns out', 'TIL', 'figured out'];
@@ -311,7 +283,10 @@ const EXTRACTORS = [
   },
   {
     name: 'important-note',
-    patterns: [/important[:\s]+(.{15,200})/gi, /(?:note|remember)[:\s]+(.{15,200})/gi],
+    patterns: [
+      /important[:\s]+(.{15,200})/gi,
+      /(?:note|remember)[:\s]+(.{15,200})/gi,
+    ],
     titlePrefix: 'Note: ',
   },
 ];
@@ -376,26 +351,16 @@ function saveMemory(db: Database.Database, memory: ExtractedMemory, project: str
     VALUES (?, ?, 'short_term', ?, ?, ?, ?, ?, ?)
   `);
 
-  stmt.run(memory.title, memory.content, memory.category, memory.salience, JSON.stringify(memory.tags), project, timestamp, timestamp);
-}
-
-// ==================== CONVERSATION EXTRACTION ====================
-
-function extractConversationFromContext(ctx?: SessionContext): string {
-  if (!ctx) return '';
-
-  if (typeof ctx.conversation === 'string') {
-    return ctx.conversation;
-  }
-
-  if (Array.isArray(ctx.messages)) {
-    return ctx.messages
-      .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .map((m) => m.content)
-      .join('\n\n');
-  }
-
-  return '';
+  stmt.run(
+    memory.title,
+    memory.content,
+    memory.category,
+    memory.salience,
+    JSON.stringify(memory.tags),
+    project,
+    timestamp,
+    timestamp
+  );
 }
 
 // ==================== PROACTIVE INSTRUCTIONS ====================
@@ -417,109 +382,92 @@ You have access to a persistent memory system. Use it proactively:
 
 // ==================== PLUGIN EXPORT ====================
 
-export default {
-  name: 'cortex-memory',
-  version: '1.0.0',
+/**
+ * OpenCode Plugin: Claude Cortex Memory
+ *
+ * This follows the official OpenCode plugin format:
+ * - Export an async function that receives context
+ * - Return an object mapping event names to handlers
+ */
+export const CortexMemoryPlugin = async (ctx: PluginContext) => {
+  const { client, project, directory } = ctx;
 
-  /**
-   * Subscribe to OpenCode events
-   */
-  subscribe: ['session.created', 'session.compacted', 'session.idle'],
+  // Log plugin initialization
+  await client.app.log('[cortex-memory] Plugin initialized', { level: 'info' });
 
-  /**
-   * Fires when a new OpenCode session starts
-   * Equivalent to Claude Code's SessionStart hook
-   */
-  async onSessionCreated(ctx: OpenCodeContext): Promise<string | void> {
-    try {
-      const project = ctx.project?.name || extractProjectFromPath(ctx.directory);
-      if (!project) return;
+  return {
+    /**
+     * Fires when a new OpenCode session starts
+     * Loads project context from memory
+     */
+    'session.created': async (_event: SessionEvent) => {
+      try {
+        const projectName = project?.name || extractProjectFromPath(directory);
+        if (!projectName) return;
 
-      const { path: dbPath } = getDbPath();
-      if (!existsSync(dbPath)) {
-        return `CLAUDE CORTEX - New project "${project}"
-
-No stored memories yet. Use the memory tools to start building project knowledge.
-${PROACTIVE_INSTRUCTIONS}`;
-      }
-
-      const db = connectDatabase(dbPath, { readonly: true });
-      const memories = getProjectContext(db, project);
-      const context = formatContext(memories, project);
-      db.close();
-
-      if (context) {
-        return `CLAUDE CORTEX - Project "${project}"
-
-${context}
-${PROACTIVE_INSTRUCTIONS}`;
-      }
-
-      return `CLAUDE CORTEX - Project "${project}"
-
-No memories found. Start building context with the \`remember\` tool.
-${PROACTIVE_INSTRUCTIONS}`;
-    } catch (error) {
-      console.error('[cortex-memory] onSessionCreated error:', error);
-    }
-  },
-
-  /**
-   * Fires before context compaction
-   * Equivalent to Claude Code's PreCompact hook
-   */
-  async onSessionCompacted(ctx: OpenCodeContext, sessionCtx?: SessionContext): Promise<string | void> {
-    try {
-      const project = ctx.project?.name || extractProjectFromPath(ctx.directory);
-      const { dir: dbDir, path: dbPath } = getDbPath();
-
-      if (!existsSync(dbDir)) {
-        mkdirSync(dbDir, { recursive: true });
-      }
-
-      if (!existsSync(dbPath)) {
-        return `PRE-COMPACT: Memory database not initialized.`;
-      }
-
-      const conversationText = extractConversationFromContext(sessionCtx);
-      if (!conversationText || conversationText.length < 100) {
-        return `PRE-COMPACT: Not enough content to extract.`;
-      }
-
-      const db = connectDatabase(dbPath);
-
-      const segments = extractMemorableSegments(conversationText);
-      const processed = processSegments(segments);
-
-      let savedCount = 0;
-      for (const memory of processed) {
-        try {
-          saveMemory(db, memory, project);
-          savedCount++;
-        } catch (err) {
-          console.error(`[cortex-memory] Failed to save memory:`, err);
+        const { path: dbPath } = getDbPath();
+        if (!existsSync(dbPath)) {
+          await client.app.log(`[cortex-memory] New project "${projectName}" - no memories yet`, { level: 'info' });
+          return;
         }
+
+        const db = connectDatabase(dbPath, { readonly: true });
+        const memories = getProjectContext(db, projectName);
+        const context = formatContext(memories, projectName);
+        db.close();
+
+        if (context) {
+          await client.app.log(`[cortex-memory] Loaded ${memories.length} memories for "${projectName}"`, { level: 'info' });
+          // Note: OpenCode plugins can't inject content into the conversation directly
+          // The MCP server's get_context tool should be used instead
+        } else {
+          await client.app.log(`[cortex-memory] No memories found for "${projectName}"`, { level: 'info' });
+        }
+      } catch (error) {
+        await client.app.log(`[cortex-memory] session.created error: ${error}`, { level: 'error' });
       }
+    },
 
-      db.close();
+    /**
+     * Fires before context compaction
+     * Extracts and saves important memories
+     */
+    'session.compacted': async (event: SessionEvent) => {
+      try {
+        const projectName = project?.name || extractProjectFromPath(directory);
+        const { dir: dbDir, path: dbPath } = getDbPath();
 
-      if (savedCount > 0) {
-        return `AUTO-MEMORY: ${savedCount} important items saved before compaction.
-${PROACTIVE_INSTRUCTIONS}`;
+        if (!existsSync(dbDir)) {
+          mkdirSync(dbDir, { recursive: true });
+        }
+
+        if (!existsSync(dbPath)) {
+          await client.app.log('[cortex-memory] Database not initialized', { level: 'warn' });
+          return;
+        }
+
+        // Note: OpenCode's session.compacted event may not include conversation text
+        // The MCP server's remember tool should be used for explicit memory storage
+        // This hook serves as a reminder/log point
+
+        await client.app.log(`[cortex-memory] Session compacted - use 'remember' tool to save important context`, {
+          level: 'info',
+          data: { sessionId: event.sessionId, project: projectName },
+        });
+      } catch (error) {
+        await client.app.log(`[cortex-memory] session.compacted error: ${error}`, { level: 'error' });
       }
+    },
 
-      return `PRE-COMPACT: No high-salience content detected. Use \`remember\` to save important items explicitly.
-${PROACTIVE_INSTRUCTIONS}`;
-    } catch (error) {
-      console.error('[cortex-memory] onSessionCompacted error:', error);
-    }
-  },
-
-  /**
-   * Fires when session becomes idle
-   * Opportunity for background maintenance
-   */
-  async onSessionIdle(_ctx: OpenCodeContext): Promise<void> {
-    // No action needed - consolidation is handled by the MCP server
-  },
+    /**
+     * Fires when session becomes idle
+     * Opportunity for background maintenance
+     */
+    'session.idle': async (_event: SessionEvent) => {
+      // No action needed - consolidation is handled by the MCP server
+    },
+  };
 };
+
+// Default export for OpenCode plugin discovery
+export default CortexMemoryPlugin;

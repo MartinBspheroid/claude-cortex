@@ -85,10 +85,10 @@ The OpenCode plugin provides automatic context loading and memory extraction:
 
 ### Installing Hooks Manually
 
-Copy the plugin to your OpenCode plugins directory:
+Copy the plugin to your OpenCode plugin directory:
 
 ```bash
-cp -r /path/to/claude-cortex/opencode-plugins ~/.config/opencode/plugins/cortex-memory
+cp -r /path/to/claude-cortex/opencode-plugins ~/.config/opencode/plugin/cortex-memory
 ```
 
 Or run:
@@ -143,7 +143,7 @@ remember({
 
 ### Plugin Not Running
 
-1. Verify plugin is installed: `ls ~/.config/opencode/plugins/cortex-memory/`
+1. Verify plugin is installed: `ls ~/.config/opencode/plugin/cortex-memory/`
 2. Restart OpenCode after installing
 3. Check that `better-sqlite3` is available
 

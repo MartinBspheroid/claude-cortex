@@ -6,7 +6,7 @@ This plugin provides brain-like memory for OpenCode sessions.
 
 Run `npx claude-cortex opencode setup` to automatically install this plugin.
 
-Or manually copy this directory to `~/.config/opencode/plugins/cortex-memory/`
+Or manually copy this directory to `~/.config/opencode/plugin/cortex-memory/`
 
 ## What It Does
 
